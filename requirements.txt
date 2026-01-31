@@ -1,0 +1,10 @@
+pandas
+yfinance
+selenium
+webdriver-manager
+requests
+lxml
+html5lib
+twstock
+mplfinance
+matplotlib
