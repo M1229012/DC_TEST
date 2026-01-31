@@ -29,6 +29,6 @@ jobs:
       # 3. 執行程式 (檔名有空白，這裡已經幫你加了雙引號)
       - name: Run Analysis Script
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_TEST }}
         run: |
           python "DC_One-page candlestick chart.py"
