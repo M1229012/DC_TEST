@@ -31,23 +31,21 @@ COLOR_DOWN = '#26a69a' # 綠
 plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'Microsoft JhengHei', 'SimHei', 'Arial']
 plt.rcParams['axes.unicode_minus'] = False
 
-# ================= 1. 爬蟲核心 (修復 Chrome 崩潰與函式缺失) =================
+# ================= 1. 爬蟲核心 =================
 
 def get_driver():
     options = Options()
-    # ⚠️ GitHub Actions 必備參數
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
     options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("--window-size=1920,1080")
+    options.add_argument('--window-size=1920,1080')
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
     
-    # 強制指定 GitHub Actions 的 Chrome 路徑
     if os.path.exists("/usr/bin/chromium-browser"):
         options.binary_location = "/usr/bin/chromium-browser"
     elif os.path.exists("/usr/bin/google-chrome"):
@@ -97,14 +95,14 @@ def get_stock_data(stock_id):
         print(f"Error: {e}")
         return None
 
-# ✅ 修正：明確定義 get_institutional_data
 def get_institutional_data(stock_id, start_date, end_date):
     print(f"[{stock_id}] 2. 抓取法人 (Fubon)...")
     driver = get_driver()
     url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
     try:
         driver.get(url)
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'外資買賣超')]")))
+        # 等待 20 秒，增加成功率
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'外資買賣超')]")))
         dfs = pd.read_html(StringIO(driver.page_source))
         
         target_df = None
@@ -127,14 +125,13 @@ def get_institutional_data(stock_id, start_date, end_date):
     driver.quit()
     return None
 
-# ✅ 修正：明確定義 get_margin_data (之前報錯的地方)
 def get_margin_data(stock_id, start_date, end_date):
     print(f"[{stock_id}] 3. 抓取融資 (Fubon)...")
     driver = get_driver()
     url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcn/zcn.djhtm?a={stock_id}&c={start_date}&d={end_date}"
     try:
         driver.get(url)
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'融資餘額')]")))
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'融資餘額')]")))
         dfs = pd.read_html(StringIO(driver.page_source))
         
         target_df = None
@@ -185,9 +182,17 @@ def get_wantgoo_diff(stock_id):
 # ================= 2. 繪圖核心 =================
 
 def create_dashboard(stock_id, df_final):
+    # 1. 切片
     df_plot = df_final.tail(70).copy()
     if df_plot.empty: return None
     
+    # 2. 確保所有欄位存在 (防呆機制)
+    ensure_cols = ['MA5','MA10','MA20','MA60','BB_Up','BB_Low',
+                   '三大法人','三大法人_Cum','外資','外資_Cum',
+                   '投信','投信_Cum','自營商','融資增減','融資餘額','家數差']
+    for c in ensure_cols:
+        if c not in df_plot.columns: df_plot[c] = 0
+
     mc = mpf.make_marketcolors(
         up=COLOR_UP, down=COLOR_DOWN, 
         edge={'up': COLOR_UP, 'down': COLOR_DOWN}, 
@@ -203,7 +208,7 @@ def create_dashboard(stock_id, df_final):
 
     addplots = []
     
-    # K線指標
+    # Panel 0
     addplots.append(mpf.make_addplot(df_plot['MA5'], color='#1f77b4', width=1.2, panel=0))
     addplots.append(mpf.make_addplot(df_plot['MA10'], color='#ff7f0e', width=1.2, panel=0))
     addplots.append(mpf.make_addplot(df_plot['MA20'], color='#2ca02c', width=1.2, panel=0))
@@ -213,7 +218,7 @@ def create_dashboard(stock_id, df_final):
 
     def get_bar_colors(series): return [COLOR_UP if v >= 0 else COLOR_DOWN for v in series]
 
-    # 副圖指標
+    # Panels
     addplots.append(mpf.make_addplot(df_plot['三大法人'], type='bar', color=get_bar_colors(df_plot['三大法人']), panel=1, ylabel='法人'))
     addplots.append(mpf.make_addplot(df_plot['三大法人_Cum'], color='#9467bd', width=1.5, panel=1))
 
@@ -241,19 +246,19 @@ def create_dashboard(stock_id, df_final):
         scale_padding={'left': 0.8, 'top': 2, 'right': 1.5, 'bottom': 1}
     )
 
-    # 客製化加工
+    # 3. 客製化 (標題與量價圖)
     ax_main = axes[0]
-    
-    # 標題
     last_date = df_plot.iloc[-1]['DateStr']
     title_text = f"{stock_id} 技術分析圖 ({last_date})"
     rect = patches.FancyBboxPatch((0.35, 1.02), 0.3, 0.04, boxstyle="round,pad=0.02", fc="#FFEB3B", ec="none", transform=ax_main.transAxes, clip_on=False)
     ax_main.add_patch(rect)
     ax_main.text(0.5, 1.04, title_text, transform=ax_main.transAxes, fontsize=16, fontweight='bold', ha='center', va='center', color='black')
 
-    # Volume Profile
     price_min, price_max = df_plot['Low'].min(), df_plot['High'].max()
     bins = 60
+    # 防止價格太接近導致 linspace 錯誤
+    if price_max == price_min: price_max += 1
+    
     price_range = np.linspace(price_min, price_max, bins + 1)
     vol_profile = np.zeros(bins)
     
@@ -261,9 +266,10 @@ def create_dashboard(stock_id, df_final):
         v = row['Volume']
         if pd.isna(v) or v == 0: continue
         mid_p = (row['High'] + row['Low']) / 2
-        idx = int((mid_p - price_min) / (price_max - price_min) * (bins - 1))
-        idx = max(0, min(bins - 1, idx))
-        vol_profile[idx] += v
+        if price_max > price_min:
+            idx = int((mid_p - price_min) / (price_max - price_min) * (bins - 1))
+            idx = max(0, min(bins - 1, idx))
+            vol_profile[idx] += v
         
     sorted_idx = np.argsort(vol_profile)[::-1]
     bar_colors = ['#B0C4DE'] * bins
@@ -297,21 +303,20 @@ def send_discord(img_path):
 if __name__ == "__main__":
     print(f"🚀 啟動: {STOCK_ID}")
     
-    # 計算日期
     end = datetime.now()
     start = end - timedelta(days=300)
     s_str, e_str = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
     
-    # 1. 股價
+    # 1. 抓資料
     df = get_stock_data(STOCK_ID)
     if df is None: sys.exit("無法取得股價")
     
-    # 2. 籌碼 (現在確保函式存在了)
+    # 2. 抓籌碼
     chips_inst = get_institutional_data(STOCK_ID, s_str, e_str)
     chips_margin = get_margin_data(STOCK_ID, s_str, e_str)
     chip_wantgoo = get_wantgoo_diff(STOCK_ID)
     
-    # 3. 合併與處理
+    # 3. 合併 (使用 join 確保對齊)
     df.index = pd.to_datetime(df['DateStr'])
     
     if chips_inst is not None:
@@ -329,24 +334,36 @@ if __name__ == "__main__":
         w.index = pd.to_datetime(w.index)
         df = df.join(w, how='left')
         
+    # 4. 補值 (確保計算欄位不會爆)
     cols = ['外資', '投信', '自營商', '融資餘額', '融資增減', '家數差']
     for c in cols:
         if c not in df.columns: df[c] = 0
         df[c] = df[c].fillna(0)
         
+    # 5. 計算衍生 (累積值)
+    # ✅ 關鍵修改：直接在 df 上操作，避免 update() 無效問題
     df['三大法人'] = df['外資'] + df['投信'] + df['自營商']
     
-    plot_len = 70
-    if len(df) > plot_len:
-        subset = df.tail(plot_len).copy()
-        subset['三大法人_Cum'] = subset['三大法人'].cumsum()
-        subset['外資_Cum'] = subset['外資'].cumsum()
-        subset['投信_Cum'] = subset['投信'].cumsum()
-        df.update(subset)
+    # 計算全期累積，然後取最後70天重置起點，讓線圖好看
+    # 這裡我們簡單做：直接對全部資料算 cumsum，繪圖時只取後 70
+    # 但為了讓圖形上的線條從相對 0 點開始 (比較好對照 Bar)，我們只對最後 80 天算 cumsum
+    
+    df['三大法人_Cum'] = 0.0
+    df['外資_Cum'] = 0.0
+    df['投信_Cum'] = 0.0
+    
+    # 只取最後 N 筆來算累積，避免數值過大
+    calc_len = 100 
+    if len(df) > calc_len:
+        # 使用 iloc 賦值，確保寫入成功
+        df.iloc[-calc_len:, df.columns.get_loc('三大法人_Cum')] = df['三大法人'].iloc[-calc_len:].cumsum()
+        df.iloc[-calc_len:, df.columns.get_loc('外資_Cum')] = df['外資'].iloc[-calc_len:].cumsum()
+        df.iloc[-calc_len:, df.columns.get_loc('投信_Cum')] = df['投信'].iloc[-calc_len:].cumsum()
     else:
         df['三大法人_Cum'] = df['三大法人'].cumsum()
         df['外資_Cum'] = df['外資'].cumsum()
         df['投信_Cum'] = df['投信'].cumsum()
 
+    # 6. 生成發送
     img = create_dashboard(STOCK_ID, df)
     if img: send_discord(img)
