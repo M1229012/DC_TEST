@@ -33,6 +33,6 @@ jobs:
 
       - name: Run Analysis Script
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_TEST }}
         run: |
           python "DC_One-page candlestick chart.py"
