@@ -34,4 +34,4 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_TEST }}
         run: |
-          python "DC_One_page_candlestick_chart.py"
+          python "DC_One-page candlestick chart.py"
