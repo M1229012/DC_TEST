@@ -31,25 +31,23 @@ COLOR_DOWN = '#26a69a' # 綠
 plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'Microsoft JhengHei', 'SimHei', 'Arial']
 plt.rcParams['axes.unicode_minus'] = False
 
-# ================= 1. 爬蟲核心 (已修復 GitHub Actions 崩潰問題) =================
+# ================= 1. 爬蟲核心 (修復 Chrome 崩潰與函式缺失) =================
 
 def get_driver():
     options = Options()
-    # ⚠️ 關鍵修正：GitHub Actions 必備參數
-    options.add_argument("--headless=new") # 新版無頭模式
+    # ⚠️ GitHub Actions 必備參數
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage") # 解決 DevToolsActivePort 錯誤
+    options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--remote-debugging-port=9222") # 解決 Port 衝突
+    options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # 針對 Wantgoo 的優化 (不載入圖片)
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
     
-    # ⚠️ 關鍵修正：指定 GitHub Actions 預裝的 Chromium 路徑
-    # 避免 webdriver_manager 下載的版本與系統依賴衝突
+    # 強制指定 GitHub Actions 的 Chrome 路徑
     if os.path.exists("/usr/bin/chromium-browser"):
         options.binary_location = "/usr/bin/chromium-browser"
     elif os.path.exists("/usr/bin/google-chrome"):
@@ -91,7 +89,7 @@ def get_stock_data(stock_id):
         if df.empty: df = yf.Ticker(f"{stock_id}.TWO").history(period="1y")
         if df.empty: return None
         
-        df['Volume'] = df['Volume'] / 1000 # 轉張數
+        df['Volume'] = df['Volume'] / 1000 
         df.index = df.index.tz_localize(None)
         df['DateStr'] = df.index.strftime('%Y-%m-%d')
         return calculate_technical_indicators(df)
@@ -99,55 +97,73 @@ def get_stock_data(stock_id):
         print(f"Error: {e}")
         return None
 
-def get_fubon_chips(stock_id, s_date, e_date):
-    print(f"[{stock_id}] 2. 抓取籌碼 (Fubon)...")
+# ✅ 修正：明確定義 get_institutional_data
+def get_institutional_data(stock_id, start_date, end_date):
+    print(f"[{stock_id}] 2. 抓取法人 (Fubon)...")
     driver = get_driver()
-    data = {'inst': None, 'margin': None}
-    
-    # 法人
+    url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
     try:
-        url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={s_date}&d={e_date}"
         driver.get(url)
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'外資買賣超')]")))
         dfs = pd.read_html(StringIO(driver.page_source))
+        
+        target_df = None
         for df in dfs:
             if df.astype(str).apply(lambda x: x.str.contains('外資買賣超', na=False)).any().any():
-                clean = df.iloc[:, [0,1,2,3]].copy()
-                clean.columns = ['DateStr', '外資', '投信', '自營商']
-                clean = clean[clean['DateStr'].apply(is_roc_date)]
-                for c in clean.columns[1:]:
-                    clean[c] = pd.to_numeric(clean[c].astype(str).str.replace(',','').str.replace('+',''), errors='coerce').fillna(0)
-                clean['DateStr'] = clean['DateStr'].apply(roc_to_datestr)
-                data['inst'] = clean
-    except Exception as e: print(f"法人抓取失敗: {e}")
+                target_df = df
+                break
+        
+        if target_df is not None:
+            clean = target_df.iloc[:, [0,1,2,3]].copy()
+            clean.columns = ['DateStr', '外資', '投信', '自營商']
+            clean = clean[clean['DateStr'].apply(is_roc_date)]
+            for c in clean.columns[1:]:
+                clean[c] = pd.to_numeric(clean[c].astype(str).str.replace(',','').str.replace('+',''), errors='coerce').fillna(0)
+            clean['DateStr'] = clean['DateStr'].apply(roc_to_datestr)
+            driver.quit()
+            return clean.dropna(subset=['DateStr'])
+    except Exception as e: 
+        print(f"法人抓取失敗: {e}")
+    driver.quit()
+    return None
 
-    # 融資券
+# ✅ 修正：明確定義 get_margin_data (之前報錯的地方)
+def get_margin_data(stock_id, start_date, end_date):
+    print(f"[{stock_id}] 3. 抓取融資 (Fubon)...")
+    driver = get_driver()
+    url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcn/zcn.djhtm?a={stock_id}&c={start_date}&d={end_date}"
     try:
-        url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcn/zcn.djhtm?a={stock_id}&c={s_date}&d={e_date}"
         driver.get(url)
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'融資餘額')]")))
         dfs = pd.read_html(StringIO(driver.page_source))
+        
+        target_df = None
         for df in dfs:
             if df.astype(str).apply(lambda x: x.str.contains('融資餘額', na=False)).any().any():
-                clean = df.iloc[:, [0,4,5,11,12]].copy()
-                clean.columns = ['DateStr', '融資餘額', '融資增減', '融券餘額', '融券增減']
-                clean = clean[clean['DateStr'].apply(is_roc_date)]
-                for c in clean.columns[1:]:
-                    clean[c] = pd.to_numeric(clean[c].astype(str).str.replace(',','').str.replace('+',''), errors='coerce').fillna(0)
-                clean['DateStr'] = clean['DateStr'].apply(roc_to_datestr)
-                data['margin'] = clean
-    except Exception as e: print(f"融資抓取失敗: {e}")
-    
+                target_df = df
+                break
+        
+        if target_df is not None:
+            clean = target_df.iloc[:, [0,4,5,11,12]].copy()
+            clean.columns = ['DateStr', '融資餘額', '融資增減', '融券餘額', '融券增減']
+            clean = clean[clean['DateStr'].apply(is_roc_date)]
+            for c in clean.columns[1:]:
+                clean[c] = pd.to_numeric(clean[c].astype(str).str.replace(',','').str.replace('+',''), errors='coerce').fillna(0)
+            clean['DateStr'] = clean['DateStr'].apply(roc_to_datestr)
+            driver.quit()
+            return clean.dropna(subset=['DateStr'])
+    except Exception as e: 
+        print(f"融資抓取失敗: {e}")
     driver.quit()
-    return data
+    return None
 
 def get_wantgoo_diff(stock_id):
-    print(f"[{stock_id}] 3. 抓取家數差 (Wantgoo)...")
+    print(f"[{stock_id}] 4. 抓取家數差 (Wantgoo)...")
     driver = get_driver()
     try:
         url = f"https://www.wantgoo.com/stock/{stock_id}/major-investors/main-trend"
         driver.get(url)
-        time.sleep(5) # 等待渲染
+        time.sleep(5) 
         html = driver.page_source
         dfs = pd.read_html(StringIO(html))
         for df in dfs:
@@ -187,7 +203,7 @@ def create_dashboard(stock_id, df_final):
 
     addplots = []
     
-    # [Panel 0] K線指標
+    # K線指標
     addplots.append(mpf.make_addplot(df_plot['MA5'], color='#1f77b4', width=1.2, panel=0))
     addplots.append(mpf.make_addplot(df_plot['MA10'], color='#ff7f0e', width=1.2, panel=0))
     addplots.append(mpf.make_addplot(df_plot['MA20'], color='#2ca02c', width=1.2, panel=0))
@@ -197,26 +213,21 @@ def create_dashboard(stock_id, df_final):
 
     def get_bar_colors(series): return [COLOR_UP if v >= 0 else COLOR_DOWN for v in series]
 
-    # [Panel 1] 三大法人
+    # 副圖指標
     addplots.append(mpf.make_addplot(df_plot['三大法人'], type='bar', color=get_bar_colors(df_plot['三大法人']), panel=1, ylabel='法人'))
     addplots.append(mpf.make_addplot(df_plot['三大法人_Cum'], color='#9467bd', width=1.5, panel=1))
 
-    # [Panel 2] 外資
     addplots.append(mpf.make_addplot(df_plot['外資'], type='bar', color=get_bar_colors(df_plot['外資']), panel=2, ylabel='外資'))
     addplots.append(mpf.make_addplot(df_plot['外資_Cum'], color='#9467bd', width=1.5, panel=2))
 
-    # [Panel 3] 投信
     addplots.append(mpf.make_addplot(df_plot['投信'], type='bar', color=get_bar_colors(df_plot['投信']), panel=3, ylabel='投信'))
     addplots.append(mpf.make_addplot(df_plot['投信_Cum'], color='#9467bd', width=1.5, panel=3))
 
-    # [Panel 4] 自營商
     addplots.append(mpf.make_addplot(df_plot['自營商'], type='bar', color=get_bar_colors(df_plot['自營商']), panel=4, ylabel='自營'))
 
-    # [Panel 5] 融資
     addplots.append(mpf.make_addplot(df_plot['融資增減'], type='bar', color=get_bar_colors(df_plot['融資增減']), panel=5, ylabel='融資'))
     addplots.append(mpf.make_addplot(df_plot['融資餘額'], color='#e377c2', width=1.5, panel=5, secondary_y=True))
 
-    # [Panel 6] 家數差 (負紅正綠)
     diff_colors = [COLOR_UP if v < 0 else COLOR_DOWN for v in df_plot['家數差']]
     addplots.append(mpf.make_addplot(df_plot['家數差'], type='bar', color=diff_colors, panel=6, ylabel='家數差'))
 
@@ -230,7 +241,7 @@ def create_dashboard(stock_id, df_final):
         scale_padding={'left': 0.8, 'top': 2, 'right': 1.5, 'bottom': 1}
     )
 
-    # 客製化: 黃色標題 + Volume Profile
+    # 客製化加工
     ax_main = axes[0]
     
     # 標題
@@ -275,31 +286,36 @@ def send_discord(img_path):
         return
     try:
         with open(img_path, "rb") as f:
-            payload = {"content": f"📊 **{STOCK_ID} 籌碼戰情**"}
+            payload = {"content": f"📊 **{STOCK_ID} 戰情分析**"}
             files = {"file": (img_path, f, "image/png")}
             requests.post(WEBHOOK_URL, data=payload, files=files)
             print("✅ 發送成功")
     except Exception as e:
         print(f"❌ 發送失敗: {e}")
 
+# ================= 主程式 =================
 if __name__ == "__main__":
     print(f"🚀 啟動: {STOCK_ID}")
     
+    # 計算日期
     end = datetime.now()
-    start = end - timedelta(days=250)
+    start = end - timedelta(days=300)
     s_str, e_str = start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
     
+    # 1. 股價
     df = get_stock_data(STOCK_ID)
     if df is None: sys.exit("無法取得股價")
     
-    chips_inst = get_fubon_chips(STOCK_ID, s_str, e_str)
+    # 2. 籌碼 (現在確保函式存在了)
+    chips_inst = get_institutional_data(STOCK_ID, s_str, e_str)
     chips_margin = get_margin_data(STOCK_ID, s_str, e_str)
     chip_wantgoo = get_wantgoo_diff(STOCK_ID)
     
+    # 3. 合併與處理
     df.index = pd.to_datetime(df['DateStr'])
     
-    if chips_inst['inst'] is not None:
-        c = chips_inst['inst'].set_index('DateStr')
+    if chips_inst is not None:
+        c = chips_inst.set_index('DateStr')
         c.index = pd.to_datetime(c.index)
         df = df.join(c, how='left')
         
