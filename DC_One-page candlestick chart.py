@@ -21,7 +21,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # ================= 設定區 =================
 STOCK_ID = "2313"
-WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_TEST")
+WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK")
 
 # 顏色定義（台股習慣：紅漲綠跌）
 COLOR_UP = '#ef5350'   # 紅
@@ -60,14 +60,31 @@ def calculate_technical_indicators(df):
 
 def get_driver():
     options = Options()
-    # GitHub Actions 必須的參數
+    
+    # GitHub Actions 關鍵參數
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
+    options.add_argument('--disable-software-rasterizer')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-logging')
+    options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--window-size=1920,1080')
+    options.add_argument('--start-maximized')
+    
+    # 修正 DevToolsActivePort 錯誤
+    options.add_argument('--remote-debugging-port=9222')
+    options.add_argument('--disable-background-timer-throttling')
+    options.add_argument('--disable-backgrounding-occluded-windows')
+    options.add_argument('--disable-renderer-backgrounding')
+    
     # 強力偽裝 User-Agent
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    # 防止檢測
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     
     # 指定 Chrome 路徑 (GitHub Actions 環境)
     if os.path.exists("/usr/bin/chromium-browser"):
@@ -75,8 +92,15 @@ def get_driver():
     elif os.path.exists("/usr/bin/google-chrome"):
         options.binary_location = "/usr/bin/google-chrome"
     
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=options)
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        # 移除 webdriver 標記
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        return driver
+    except Exception as e:
+        print(f"WebDriver 初始化失敗: {e}")
+        raise
 
 def get_stock_data(stock_id):
     print(f"[{stock_id}] 1. 抓取股價 (Yahoo)...")
@@ -95,12 +119,17 @@ def get_stock_data(stock_id):
 
 def get_institutional_data(stock_id, start_date, end_date):
     print(f"[{stock_id}] 2. 抓取法人 (Fubon)...")
-    driver = get_driver()
-    url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
+    driver = None
     try:
+        driver = get_driver()
+        url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcl/zcl.djhtm?a={stock_id}&c={start_date}&d={end_date}"
         driver.get(url)
-        # 等待元素，使用你原本的 XPath
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'外資買賣超')]")))
+        
+        # 等待元素
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'外資買賣超')]"))
+        )
+        
         dfs = pd.read_html(StringIO(driver.page_source))
         
         target_df = None
@@ -116,20 +145,30 @@ def get_institutional_data(stock_id, start_date, end_date):
             for c in clean.columns[1:]:
                 clean[c] = pd.to_numeric(clean[c].astype(str).str.replace(',','').str.replace('+',''), errors='coerce').fillna(0)
             clean['DateStr'] = clean['DateStr'].apply(roc_to_datestr)
-            driver.quit()
             return clean.dropna(subset=['DateStr'])
     except Exception as e: 
         print(f"法人抓取失敗: {e}")
-    driver.quit()
+        return None
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
     return None
 
 def get_margin_data(stock_id, start_date, end_date):
     print(f"[{stock_id}] 3. 抓取融資 (Fubon)...")
-    driver = get_driver()
-    url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcn/zcn.djhtm?a={stock_id}&c={start_date}&d={end_date}"
+    driver = None
     try:
+        driver = get_driver()
+        url = f"https://fubon-ebrokerdj.fbs.com.tw/z/zc/zcn/zcn.djhtm?a={stock_id}&c={start_date}&d={end_date}"
         driver.get(url)
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'融資餘額')]")))
+        
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.XPATH, "//td[contains(text(),'融資餘額')]"))
+        )
+        
         dfs = pd.read_html(StringIO(driver.page_source))
         
         target_df = None
@@ -145,21 +184,27 @@ def get_margin_data(stock_id, start_date, end_date):
             for c in clean.columns[1:]:
                 clean[c] = pd.to_numeric(clean[c].astype(str).str.replace(',','').str.replace('+',''), errors='coerce').fillna(0)
             clean['DateStr'] = clean['DateStr'].apply(roc_to_datestr)
-            driver.quit()
             return clean.dropna(subset=['DateStr'])
     except Exception as e: 
         print(f"融資抓取失敗: {e}")
-    driver.quit()
+        return None
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
     return None
 
 def get_wantgoo_data(stock_id):
     print(f"[{stock_id}] 4. 抓取家數差 (Wantgoo)...")
-    driver = get_driver()
+    driver = None
     try:
-        # 使用 Selenium 直接模擬
+        driver = get_driver()
         url = f"https://www.wantgoo.com/stock/{stock_id}/major-investors/main-trend"
         driver.get(url)
         time.sleep(5)  # 等待 JavaScript 載入
+        
         dfs = pd.read_html(StringIO(driver.page_source))
         
         target_df = None
@@ -174,11 +219,16 @@ def get_wantgoo_data(stock_id):
                     # Wantgoo 格式通常是 YYYY/MM/DD
                     clean['DateStr'] = pd.to_datetime(clean['DateStr']).dt.strftime('%Y-%m-%d')
                     clean['家數差'] = pd.to_numeric(clean['家數差'], errors='coerce').fillna(0)
-                    driver.quit()
                     return clean
     except Exception as e:
         print(f"Wantgoo 抓取失敗: {e}")
-    driver.quit()
+        return None
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
     return None
 
 # ================= 2. 繪圖核心 =================
